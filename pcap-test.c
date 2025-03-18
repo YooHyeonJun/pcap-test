@@ -9,6 +9,7 @@ void usage() {
     printf("syntax: pcap-test <interface>\n");
     printf("sample: pcap-test wlan0\n");
 }
+const int ip_offset = 14;
 typedef struct {
     char* dev_;
 } Param;
@@ -53,6 +54,61 @@ void print_mac_address(u_int8_t* mac) {
     printf("%02X:%02X:%02X:%02X:%02X:%02X",
            mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
 }
+void etherParsing(const u_char* packet){
+    eth.ether_type = 0;
+
+    memcpy(eth.ether_dhost, packet, 6);
+
+    // src mac
+    memcpy(eth.ether_shost, packet + 6, 6);
+
+    //type
+    eth.ether_type = ntohs(*(u_int16_t*)(packet + 12));
+}
+int ipParsing(const u_char* packet){
+    // IPv4 header parsing
+      // Ethernet header length
+
+    // extract IHL
+    ipv4.ip_ver_ihl = packet[ip_offset];
+    ipv4.ip_proto = packet[ip_offset + 9];  // if tcp then 6
+    ipv4.ip_src = *(u_int32_t*)(packet + ip_offset + 12);  // src IP
+    ipv4.ip_dst = *(u_int32_t*)(packet + ip_offset + 16);  // dest IP
+    return ipv4.ip_proto;
+}
+void printAll(){
+    printf("\nEthernet Header:\n");
+    printf("Destination MAC: ");
+    print_mac_address(eth.ether_dhost);
+    printf("\n");
+
+    printf("Source MAC: ");
+    print_mac_address(eth.ether_shost);
+    printf("\n");
+
+    printf("\nIPv4 Header:\n");
+    printf("Source IP: %s\n", inet_ntoa(*(struct in_addr*)&ipv4.ip_src));
+    printf("Destination IP: %s\n", inet_ntoa(*(struct in_addr*)&ipv4.ip_dst));
+
+    printf("\nTCP Header:\n");
+    printf("Source Port (Converted): %d\n", tcp.th_sport);
+    printf("Destination Port (Converted): %d\n", tcp.th_dport);
+
+}
+int tcpParsing(const u_char* packet){
+    // TCP header offset
+    int tcp_offset = ip_offset + (ipv4.ip_ver_ihl & 0x0F) * 4;  // TCP 헤더는 IP 헤더 뒤에 위치
+
+    tcp.th_sport = ntohs(*(u_int16_t*)(packet + tcp_offset));  // src port
+    tcp.th_dport = ntohs(*(u_int16_t*)(packet + tcp_offset + 2));  // desr port
+    tcp.th_off = (packet[tcp_offset + 12] >> 4) * 4;  // TCP header length
+    printAll();
+
+    // data
+    return tcp_offset;
+}
+
+
 int main(int argc, char* argv[]) {
     if (!parse(&param, argc, argv))
         return -1;
@@ -73,59 +129,18 @@ int main(int argc, char* argv[]) {
             printf("pcap_next_ex return %d(%s)\n", res, pcap_geterr(pcap));
             break;
         }
-
-        eth.ether_type = 0;
-        // Ethernet Header parsing
-
-        // dest mac
-        memcpy(eth.ether_dhost, packet, 6);
-
-        // src mac
-        memcpy(eth.ether_shost, packet + 6, 6);
-
-        //type
-        eth.ether_type = ntohs(*(u_int16_t*)(packet + 12));
-
+        etherParsing(packet);
         // Ethernet type check (IPv4)
         if (eth.ether_type == 0x0800) {  // IPv4
             // IPv4 header parsing
             int ip_offset = 14;  // Ethernet header length
 
             // extract IHL
-            ipv4.ip_ver_ihl = packet[ip_offset];
-            ipv4.ip_proto = packet[ip_offset + 9];  // if tcp then 6
-            ipv4.ip_src = *(u_int32_t*)(packet + ip_offset + 12);  // src IP
-            ipv4.ip_dst = *(u_int32_t*)(packet + ip_offset + 16);  // dest IP
+            if(ipParsing(packet) != 6)continue;
+            int tcp_offset = tcpParsing(packet);
+            int payload_len = header->caplen - (tcp_offset + tcp.th_off);
+            print_payload(packet, ip_offset, tcp_offset, payload_len);
 
-            if (ipv4.ip_proto == 6) {  // TCP
-                // TCP header offset
-                int tcp_offset = ip_offset + (ipv4.ip_ver_ihl & 0x0F) * 4;  // TCP 헤더는 IP 헤더 뒤에 위치
-
-                tcp.th_sport = ntohs(*(u_int16_t*)(packet + tcp_offset));  // src port
-                tcp.th_dport = ntohs(*(u_int16_t*)(packet + tcp_offset + 2));  // desr port
-                tcp.th_off = (packet[tcp_offset + 12] >> 4) * 4;  // TCP header length
-
-                printf("\nEthernet Header:\n");
-                printf("Destination MAC: ");
-                print_mac_address(eth.ether_dhost);
-                printf("\n");
-
-                printf("Source MAC: ");
-                print_mac_address(eth.ether_shost);
-                printf("\n");
-
-                printf("\nIPv4 Header:\n");
-                printf("Source IP: %s\n", inet_ntoa(*(struct in_addr*)&ipv4.ip_src));
-                printf("Destination IP: %s\n", inet_ntoa(*(struct in_addr*)&ipv4.ip_dst));
-
-                printf("\nTCP Header:\n");
-                printf("Source Port (Converted): %d\n", tcp.th_sport);
-                printf("Destination Port (Converted): %d\n", tcp.th_dport);
-
-                // data
-                int payload_len = header->caplen - (tcp_offset + tcp.th_off);
-                print_payload(packet, ip_offset, tcp_offset, payload_len);
-            }
         }
     }
 
